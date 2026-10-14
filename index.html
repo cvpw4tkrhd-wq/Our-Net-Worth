@@ -6,9 +6,10 @@
 <title>Our Net Worth</title>
 <meta name="theme-color" content="#0B5C5C">
 <meta name="description" content="Vad vi har sparat nu och vad vi kan ha om några år. All data stannar i din webbläsare.">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" type="image/png" href="icon-192.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest?v=3">
+<link rel="icon" type="image/svg+xml" href="icon.svg?v=3">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=3">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=3">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Net Worth">
@@ -58,7 +59,7 @@ p{margin:0}
 .btn{width:100%;min-height:48px;border:1px solid var(--line);border-radius:14px;background:#fff;font-size:14px;font-weight:600;color:var(--accent);padding:0 14px}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn.danger{color:var(--neg)}
-.btn.sm{min-height:40px;width:auto;font-size:13px;border-radius:12px}
+.btn.sm{min-height:40px;width:auto;font-size:13px;border-radius:12px;white-space:nowrap;flex:none}
 .btn:disabled{opacity:.5;cursor:default}
 .btn+.btn{margin-top:10px}
 .link{border:0;background:none;color:var(--accent);font-size:13px;font-weight:600;min-height:44px;padding:0 6px}
@@ -126,9 +127,9 @@ p{margin:0}
 /* ============================================================
    Our Net Worth – en enda fil. All data ligger i webbläsaren.
    ============================================================ */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const DATA_MODEL = 1;
-const CHANGELOG = { '1.0.0': 'Första versionen: saldon per månad för två personer och gemensamt, översikt, prognos år för år och säkerhetskopior.' };
+const CHANGELOG = { '1.1.0': 'Ny ikon, årlig avkastning för börskonton direkt i Prognos, appen öppnar i aktuell månad och skatt (22 %) dras av på lägenhetens värdeökning.', '1.0.0': 'Första versionen: saldon per månad för två personer och gemensamt, översikt, prognos år för år och säkerhetskopior.' };
 const LS_KEY = 'onw_data_v1';
 const LS_TOKEN = 'onw_gist_token';
 
@@ -183,7 +184,7 @@ function parseNum(v) {
 /* ---------- data ---------- */
 function emptyDb() {
   return { model: DATA_MODEL, appVersion: APP_VERSION,
-    settings: { nameA: 'Jag', nameB: 'Min man', shareA: 50, homeValue: 0, horizon: 10, scenario: 0, real: false, inflation: 2, contribGrowth: 0, remind: true, gistAuto: false },
+    settings: { nameA: 'Jag', nameB: 'Min man', shareA: 50, homeValue: 0, horizon: 10, scenario: 0, real: false, inflation: 2, contribGrowth: 0, taxRate: 22, remind: true, gistAuto: false },
     posts: DEFAULT_POSTS.map(p => ({ ...p })), entries: {}, assump: {},
     meta: { lastSnapMonth: '', gistId: '', gistLast: 0 } };
 }
@@ -235,9 +236,12 @@ function valueAt(id, mk) {
   return { v: null, carried: false, from: null };
 }
 function owners() { return [{ id: 'a', name: db.settings.nameA || 'Jag', color: 'var(--ca)', hex: '#0B5C5C' }, { id: 'b', name: db.settings.nameB || 'Min man', color: 'var(--cb)', hex: '#E08A2C' }, { id: 's', name: 'Gemensamt', color: 'var(--cs)', hex: '#7A5CC2' }]; }
+const taxRate = () => Math.min(100, Math.max(0, +db.settings.taxRate || 0)) / 100;
+/* Värdeökning på bostaden räknas efter skatt. Förlust ger ingen skattelättnad i appen. */
+function netOf(p, v) { if (v === null || v === undefined) return 0; return p.kind === 'appr' && v > 0 ? v * (1 - taxRate()) : v; }
 function snapshotAt(mk) {
   const g = { a: 0, b: 0, s: 0 }; const per = {};
-  for (const p of db.posts) { const r = valueAt(p.id, mk); per[p.id] = r; g[p.owner] += r.v || 0; }
+  for (const p of db.posts) { const r = valueAt(p.id, mk); r.net = netOf(p, r.v); per[p.id] = r; g[p.owner] += r.net; }
   const sh = Math.min(100, Math.max(0, +db.settings.shareA || 0)) / 100;
   const total = g.a + g.b + g.s;
   return { g, per, total, a: g.a + g.s * sh, b: g.b + g.s * (1 - sh) };
@@ -265,7 +269,7 @@ function project(years, adj, real) {
       else { const rm = Math.pow(1 + r, 1 / 12) - 1; const c = a.contrib * (['saving', 'invest'].includes(p.kind) ? Math.pow(1 + cg, Math.floor((m - 1) / 12)) : 1); bal[p.id] = bal[p.id] * (1 + rm) + c; }
     }
     if (m % 12 === 0) {
-      const f = real ? 1 / Math.pow(1 + inf, m / 12) : 1; const g = { a: 0, b: 0, s: 0 }; for (const p of db.posts) g[p.owner] += bal[p.id] * f;
+      const f = real ? 1 / Math.pow(1 + inf, m / 12) : 1; const g = { a: 0, b: 0, s: 0 }; for (const p of db.posts) g[p.owner] += netOf(p, bal[p.id]) * f;
       pts.push({ y: m / 12, mk: addMonths(last, m), g, total: g.a + g.b + g.s, a: g.a + g.s * sh, b: g.b + g.s * (1 - sh) });
     }
   }
@@ -329,10 +333,9 @@ const backHead = t => `<header><button class="link" style="margin-left:-6px" dat
 function deltaTxt(d, suffix) { const r = Math.round(d); return `<span class="${r > 0 ? 'pos' : r < 0 ? 'neg' : 'muted'}">${fmtS(d)} kr${suffix || ''}</span>`; }
 
 /* ---------- Översikt ---------- */
-function reminder() {
-  if (!db.settings.remind || !latestMonth()) return ''; const now = new Date(); const d = now.getDate();
-  if (!(d >= 25 || d <= 5) || db.entries[currentMonth()]) return '';
-  return `<div class="banner"><span>Dags att mata in saldon för ${monthName(currentMonth())}</span><button class="btn sm" data-a="nav" data-v="entry">Mata in</button></div>`;
+function reminder(mk) {
+  if (!db.settings.remind || !latestMonth() || mk !== currentMonth() || db.entries[mk]) return '';
+  return `<div class="banner"><span>Inga saldon inmatade för ${monthName(mk)} än. Siffrorna visar senast inmatade värden.</span><button class="btn sm" data-a="nav" data-v="entry">Mata in</button></div>`;
 }
 function viewOverview() {
   const last = latestMonth();
@@ -343,10 +346,10 @@ function viewOverview() {
     <label class="lbl2" for="n-b">Andra personen</label><input class="inp" id="n-b" value="${esc(db.settings.nameB)}" data-change="nameB" autocomplete="off">
     <div style="margin-top:16px"><button class="btn primary" data-a="nav" data-v="entry">Mata in första saldona</button></div></div>`;
   }
-  const first = firstMonth(); const mk = S.month > last ? last : S.month < first ? first : S.month;
+  const first = firstMonth(); const upper = last > currentMonth() ? last : currentMonth(); const mk = S.month > upper ? upper : S.month < first ? first : S.month;
   const cur = snapshotAt(mk); const pm = addMonths(mk, -1); const hasPrev = mk > first; const prev = hasPrev ? snapshotAt(pm) : null;
   const O = owners();
-  let h = `<header>${monthRow(mk, 'mprev', 'mnext', mk > first, mk < last)}<h1>Översikt</h1></header>` + reminder();
+  let h = `<header>${monthRow(mk, 'mprev', 'mnext', mk > first, mk < upper)}<h1>Översikt</h1></header>` + reminder(mk);
   const dTot = prev ? cur.total - prev.total : null;
   h += `<div class="card pad"><div class="small muted">Nettovärde ${monthName(mk)}</div><div class="mono big" style="font-size:30px;margin-top:2px">${fmt(cur.total)} kr</div>
   <div class="small" style="margin-top:4px">${prev ? deltaTxt(dTot, ` mot ${monthName(pm)}`) : '<span class="muted">Första månaden i appen</span>'}</div></div>`;
@@ -362,7 +365,10 @@ function viewOverview() {
   for (const o of O) {
     const ps = db.posts.filter(p => p.owner === o.id); if (!ps.length) continue;
     h += `<div class="card" style="margin-top:8px"><div class="line" style="padding-bottom:6px"><div class="t" style="display:flex;align-items:center;gap:8px;font-weight:600"><span class="dot" style="background:${o.hex}"></span>${esc(o.name)}</div><div class="mono small">${fmt(cur.g[o.id])} kr</div></div>`
-      + ps.map(p => { const r = cur.per[p.id]; const pr = prev ? prev.per[p.id] : null; const d = pr && r.v !== null ? (r.v - (pr.v || 0)) : null; return `<div class="line"><div><div class="t">${esc(p.name)}</div><div class="s">${r.v === null ? 'Ingen inmatning än' : (r.carried ? 'oförändrad sedan ' + monthName(r.from) : (d !== null ? deltaTxt(d, '') : ''))}</div></div><div class="mono">${r.v === null ? '–' : fmt(r.v) + ' kr'}</div></div>`; }).join('') + `</div>`;
+      + ps.map(p => { const r = cur.per[p.id]; const pr = prev ? prev.per[p.id] : null; const d = pr && r.v !== null ? (r.net - pr.net) : null;
+        let sub = r.v === null ? 'Ingen inmatning än' : (r.carried ? 'oförändrad sedan ' + monthName(r.from) : (d !== null ? deltaTxt(d, '') : ''));
+        if (p.kind === 'appr' && r.v !== null && r.v > 0 && taxRate() > 0) sub += `${sub ? ' · ' : ''}efter ${Math.round(taxRate() * 1000) / 10} % skatt, brutto ${fmt(r.v)}`;
+        return `<div class="line"><div><div class="t">${esc(p.name)}</div><div class="s">${sub}</div></div><div class="mono">${r.v === null ? '–' : fmt(r.net) + ' kr'}</div></div>`; }).join('') + `</div>`;
   }
   return h;
 }
@@ -383,9 +389,11 @@ function viewEntry() {
   return h;
 }
 function deltaFor(id, val, mk) {
-  const pv = valueAt(id, addMonths(mk, -1)).v; if (pv === null) return val !== null ? '' : '';
+  const p = post(id); const pv = valueAt(id, addMonths(mk, -1)).v;
+  const tax = p && p.kind === 'appr' && val !== null && val > 0 && taxRate() > 0 ? `efter skatt ${fmt(val * (1 - taxRate()))} kr` : '';
+  if (pv === null) return tax;
   if (val === null) return `förra månaden ${fmt(pv)} kr`;
-  const d = val - pv; return `${fmtS(d)} kr mot förra månaden`;
+  return `${fmtS(val - pv)} kr mot förra månaden${tax ? ' · ' + tax : ''}`;
 }
 
 /* ---------- Prognos ---------- */
@@ -397,6 +405,7 @@ function viewForecast() {
   h += `<div class="pills" role="group" aria-label="Period">${[5, 10, 20, 30].map(n => `<button class="pill" data-a="horizon" data-v="${n}" aria-pressed="${hz === n}">${n} år</button>`).join('')}</div>`;
   h += `<div class="pills" role="group" aria-label="Scenario">${[[-2, 'Försiktigt'], [0, 'Normalt'], [2, 'Gott']].map(([v, l]) => `<button class="pill" data-a="scenario" data-v="${v}" aria-pressed="${adj === v}">${l}</button>`).join('')}</div>`;
   h += `<div class="pills"><button class="pill" data-a="real" data-v="0" aria-pressed="${!real}">Nominellt</button><button class="pill" data-a="real" data-v="1" aria-pressed="${real}">Dagens penningvärde</button></div>`;
+  h += bossHtml();
   h += `<div class="card pad"><div class="small muted">Om ${hz} år (${monthName(end.mk)} ${end.mk.slice(0, 4)})</div><div class="mono big" style="font-size:30px;margin-top:2px">${fmt(end.total)} kr</div>
   <div class="small" style="margin-top:4px">${deltaTxt(end.total - now.total, ' mot nu')}</div></div>`;
   h += `<div class="card">${[['a', end.a], ['b', end.b]].map(([id, v]) => { const o = O.find(x => x.id === id); return `<div class="line"><div><div class="t" style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:${o.hex}"></span>${esc(o.name)}</div><div class="s">inklusive andel av gemensamt</div></div><div class="mono">${fmt(v)} kr</div></div>`; }).join('')}<div class="line"><div><div class="t" style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:#7A5CC2"></span>Gemensamt</div><div class="s">ingår i summorna ovan</div></div><div class="mono">${fmt(end.g.s)} kr</div></div></div>`;
@@ -405,11 +414,18 @@ function viewForecast() {
   const rows = pts.filter(p => p.y > 0 && (p.y <= 5 || p.y % 5 === 0 || p.y === hz));
   h += `<div class="card" style="padding:8px 12px 4px"><div class="tbl h"><div style="text-align:left">År</div><div>${esc((db.settings.nameA || 'Jag').slice(0, 7))}</div><div>${esc((db.settings.nameB || 'Man').slice(0, 7))}</div><div>Gem.</div><div>Totalt</div></div>`
     + rows.map(p => `<div class="tbl r"><div class="y">${p.mk.slice(0, 4)}</div><div>${fmt(p.g.a / 1000)}</div><div>${fmt(p.g.b / 1000)}</div><div>${fmt(p.g.s / 1000)}</div><div class="tt">${fmt(p.total / 1000)}</div></div>`).join('') + `</div>`;
+  if (taxRate() > 0 && db.posts.some(p => p.kind === 'appr')) h += `<p class="note">Lägenhetens värdeökning räknas efter ${Math.round(taxRate() * 1000) / 10} % skatt. Ändra under Mer.</p>`;
   if (!(+st.homeValue) && db.posts.some(p => p.kind === 'appr')) h += `<p class="note" style="color:var(--neg)">Fyll i lägenhetens värde under Ändra antaganden för att räkna med värdeökning framåt. Tills dess hålls värdeökningen oförändrad.</p>`;
   h += `<p class="note">Tabellen är i tusen kronor och visar egna poster per person och gemensamt var för sig, mätt ${latestMonth() ? monthName(latestMonth()) : ''} varje år. Prognosen är ett räkneexempel utifrån antagandena nedan, inte en garanti. Börsens avkastning varierar kraftigt mellan åren.</p>`;
   h += `<div class="actionbar" style="position:static;background:none;margin-top:6px"><button class="btn" data-a="assump">${S.assumpOpen ? 'Dölj antaganden' : 'Ändra antaganden'}</button></div>`;
   if (S.assumpOpen) h += assumptionsHtml();
   return h;
+}
+function bossHtml() {
+  const ps = db.posts.filter(p => p.kind === 'invest'); if (!ps.length) return '';
+  const O = owners();
+  return `<div class="card pad"><h2 style="font-size:15px">Årlig avkastning på börskonton</h2><p class="note" style="margin:2px 0 6px">Procent per år. Scenariot ovan lägger till eller drar ifrån två procentenheter.</p>`
+    + ps.map(p => { const a = assumpOf(p); const o = O.find(x => x.id === p.owner); return `<div class="field"><label for="ret-${p.id}"><span style="display:inline-flex;align-items:center;gap:8px"><span class="dot" style="background:${o.hex}"></span>${esc(o.name)}</span><span class="hint">${esc(p.name)}</span></label><input class="inp num" id="ret-${p.id}" inputmode="decimal" data-change="aret" data-id="${p.id}" value="${a.custom.ret !== undefined ? a.custom.ret : ''}" placeholder="${a.d.ret}" aria-label="Årlig avkastning i procent för ${esc(o.name)} ${esc(p.name)}"></div>`; }).join('') + `</div>`;
 }
 function assumptionsHtml() {
   let h = `<div class="card pad"><div class="lbl2" style="margin-top:0">Lägenhetens värde idag (kr)</div><input class="inp num" inputmode="decimal" data-change="homeValue" value="${db.settings.homeValue ? String(db.settings.homeValue) : ''}" placeholder="Behövs för värdeökning framåt" aria-label="Lägenhetens värde idag">
@@ -418,10 +434,10 @@ function assumptionsHtml() {
   for (const o of owners()) {
     const ps = db.posts.filter(p => p.owner === o.id && p.kind !== 'fixed'); if (!ps.length) continue;
     h += `<div class="gh"><span class="dot" style="background:${o.hex}"></span>${esc(o.name)}</div><div class="card" style="margin-top:6px;padding:6px 16px 10px">`;
-    h += ps.map(p => { const a = assumpOf(p); const showC = p.kind !== 'appr';
+    h += ps.map(p => { const a = assumpOf(p); const showC = p.kind !== 'appr'; const showR = p.kind !== 'invest';
       return `<div style="padding:8px 0;border-bottom:1px solid var(--line3)"><div class="t" style="font-size:14px;font-weight:600">${esc(p.name)} <span class="small muted" style="font-weight:400">${KINDS[p.kind].label}</span></div>
-      <div style="display:grid;grid-template-columns:${showC ? '1fr 1fr' : '1fr'};gap:10px">${showC ? `<div><div class="lbl2">Per månad (kr)</div><input class="inp num" inputmode="decimal" data-change="acontrib" data-id="${p.id}" value="${a.custom.contrib !== undefined ? a.custom.contrib : ''}" placeholder="${fmt(a.d.contrib)}" aria-label="Sparande per månad för ${esc(p.name)}"></div>` : ''}
-      <div><div class="lbl2">${p.kind === 'appr' ? 'Värdeökning' : 'Avkastning'} per år (%)</div><input class="inp num" inputmode="decimal" data-change="aret" data-id="${p.id}" value="${a.custom.ret !== undefined ? a.custom.ret : ''}" placeholder="${a.d.ret}" aria-label="Avkastning för ${esc(p.name)}"></div></div></div>`; }).join('');
+      <div style="display:grid;grid-template-columns:${showC && showR ? '1fr 1fr' : '1fr'};gap:10px">${showC ? `<div><div class="lbl2">Per månad (kr)</div><input class="inp num" inputmode="decimal" data-change="acontrib" data-id="${p.id}" value="${a.custom.contrib !== undefined ? a.custom.contrib : ''}" placeholder="${fmt(a.d.contrib)}" aria-label="Sparande per månad för ${esc(p.name)}"></div>` : ''}
+      ${showR ? `<div><div class="lbl2">${p.kind === 'appr' ? 'Värdeökning' : 'Avkastning'} per år (%)</div><input class="inp num" inputmode="decimal" data-change="aret" data-id="${p.id}" value="${a.custom.ret !== undefined ? a.custom.ret : ''}" placeholder="${a.d.ret}" aria-label="Avkastning för ${esc(p.name)}"></div>` : ''}</div></div>`; }).join('');
     h += `</div>`;
   }
   h += `<p class="note">Ljusa siffror är förslag. Månadsbeloppet föreslås från hur saldot ändrats de senaste månaderna, så för börskonton ingår då även värdeförändring. Skriv in vad ni faktiskt sätter in för en säkrare prognos. Tomt fält återgår till förslaget.</p>`;
@@ -437,6 +453,8 @@ function viewMore() {
   <div class="lbl2">Andra personen</div><input class="inp" value="${esc(st.nameB)}" data-change="nameB" autocomplete="off" aria-label="Andra personens namn">
   <div class="lbl2">${esc(st.nameA)}s andel av gemensamt (%)</div><input class="inp num" inputmode="decimal" value="${st.shareA}" data-change="shareA" aria-label="Första personens andel av gemensamt">
   <p class="note">Gemensamma poster (bostaden) delas så här när ni ser varje persons totala värde. Resten blir ${esc(st.nameB)}s andel.</p></div>
+  <div class="card pad"><div class="lbl2" style="margin-top:0">Skatt på lägenhetens värdeökning (%)</div><input class="inp num" inputmode="decimal" value="${st.taxRate}" data-change="taxRate" aria-label="Skatt på värdeökning i procent">
+  <p class="note">Reavinstskatten på privatbostad är 22 % av vinsten, och appen drar av den från den estimerade värdeökningen i alla summor. Avdrag för förbättringar och mäklararvode räknas inte in, och uppskov är inte med. Skriv 0 om ni inte vill dra av skatt.</p></div>
   <div class="card"><button class="menu-btn" data-a="sub" data-v="posts">Poster och kolumner<span class="muted small" style="margin-left:auto">${db.posts.length}</span>${chev}</button>
   <button class="menu-btn" data-a="sub" data-v="backup">Backup och versioner${chev}</button></div>
   <p class="note">Version ${APP_VERSION} · datamodell ${DATA_MODEL}. All data ligger bara i den här webbläsaren.</p>`;
@@ -472,7 +490,7 @@ function viewBackup() {
   <div class="check" style="margin-top:6px"><input type="checkbox" id="gist-auto" ${db.settings.gistAuto ? 'checked' : ''} data-change="gistauto"><label for="gist-auto">Automatisk kopia varje vecka</label></div>
   <div class="small muted" style="margin-bottom:8px">${db.meta.gistLast ? 'Senaste Gist-kopia ' + new Date(db.meta.gistLast).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : 'Ingen Gist-kopia än'}</div>
   <div class="stack"><button class="btn" data-a="gistsave">Spara kopia nu</button><button class="btn" data-a="gistrestore" ${db.meta.gistId ? '' : 'disabled'}>Hämta senaste kopian</button></div></div>
-  <div class="card pad"><div class="check" style="min-height:40px"><input type="checkbox" id="remind" ${db.settings.remind ? 'checked' : ''} data-change="remind"><label for="remind">Påminn vid månadsskifte om att mata in saldon</label></div></div>
+  <div class="card pad"><div class="check" style="min-height:40px"><input type="checkbox" id="remind" ${db.settings.remind ? 'checked' : ''} data-change="remind"><label for="remind">Visa påminnelse när månadens saldon saknas</label></div></div>
   <h3>Appversion</h3>
   <div class="card pad" style="margin-top:8px"><div class="line" style="padding-top:0"><div class="t">v${APP_VERSION}</div><div class="s">Datamodell ${DATA_MODEL}</div></div><p class="note" style="margin:0">Nytt i v${APP_VERSION}: ${esc(CHANGELOG[APP_VERSION] || '')}</p><div class="stack" style="margin-top:10px"><button class="btn" data-a="checkupdate">Sök efter uppdatering</button></div></div>
   <h3>Återställningspunkter</h3><p class="note" style="margin-top:4px">Skapas automatiskt före återställning och uppdatering samt vid månadsskifte. De tio senaste sparas i webbläsaren.</p>
@@ -570,6 +588,7 @@ document.addEventListener('change', e => {
   if (k === 'nameA' || k === 'nameB') { st[k] = el.value.trim() || (k === 'nameA' ? 'Jag' : 'Min man'); save(); if (latestMonth()) render(true); }
   else if (k === 'shareA') { const v = parseNum(el.value); st.shareA = v === null ? 50 : Math.min(100, Math.max(0, v)); save(); render(true); }
   else if (k === 'homeValue') { const v = parseNum(el.value); st.homeValue = v === null || v < 0 ? 0 : v; save(); render(true); }
+  else if (k === 'taxRate') { const v = parseNum(el.value); st.taxRate = v === null ? 22 : Math.min(100, Math.max(0, v)); save(); render(true); }
   else if (k === 'contribGrowth' || k === 'inflation') { const v = parseNum(el.value); st[k] = v === null ? 0 : v; save(); render(true); }
   else if (k === 'acontrib' || k === 'aret') {
     const id = el.dataset.id; const f = k === 'acontrib' ? 'contrib' : 'ret'; const v = parseNum(el.value); db.assump[id] = db.assump[id] || {};
@@ -596,7 +615,7 @@ $('#file-restore').addEventListener('change', async e => {
    Start
    ============================================================ */
 async function boot() {
-  loadDb(); const last = latestMonth(); S.month = last || currentMonth();
+  loadDb(); const last = latestMonth(); S.month = currentMonth(); S.emonth = currentMonth();
   if (last) {
     if (db.appVersion && db.appVersion !== APP_VERSION) await snapshot(`Före uppdatering till v${APP_VERSION}`);
     if (db.meta.lastSnapMonth !== currentMonth()) { await snapshot('Månadsskifte'); db.meta.lastSnapMonth = currentMonth(); }
