@@ -1,5 +1,5 @@
 // Håll VERSION i synk med APP_VERSION i index.html
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const CACHE = 'ournetworth-' + VERSION;
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './icon.svg', './favicon-32.png'];
 

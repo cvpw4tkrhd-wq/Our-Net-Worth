@@ -127,11 +127,12 @@ p{margin:0}
 /* ============================================================
    Our Net Worth – en enda fil. All data ligger i webbläsaren.
    ============================================================ */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const DATA_MODEL = 1;
-const CHANGELOG = { '1.2.0': 'Månadsinsättning på börskonton i Mata in. Prognosen räknar med insättningarna, och appen visar utfallet hittills.', '1.1.0': 'Ny ikon, årlig avkastning för börskonton direkt i Prognos, appen öppnar i aktuell månad och skatt (22 %) dras av på lägenhetens värdeökning.', '1.0.0': 'Första versionen: saldon per månad för två personer och gemensamt, översikt, prognos år för år och säkerhetskopior.' };
+const CHANGELOG = { '1.3.0': 'Synk mellan enheter via en JSON-fil i ett privat GitHub-repo. Ändringar slås ihop per månad och post.', '1.2.0': 'Månadsinsättning på börskonton i Mata in. Prognosen räknar med insättningarna, och appen visar utfallet hittills.', '1.1.0': 'Ny ikon, årlig avkastning för börskonton direkt i Prognos, appen öppnar i aktuell månad och skatt (22 %) dras av på lägenhetens värdeökning.', '1.0.0': 'Första versionen: saldon per månad för två personer och gemensamt, översikt, prognos år för år och säkerhetskopior.' };
 const LS_KEY = 'onw_data_v1';
 const LS_TOKEN = 'onw_gist_token';
+const LS_SYNC_TOKEN = 'onw_sync_token';
 
 const KINDS = {
   saving: { label: 'Sparande', ret: 2, hint: '' },
@@ -185,7 +186,7 @@ function parseNum(v) {
 function emptyDb() {
   return { model: DATA_MODEL, appVersion: APP_VERSION,
     settings: { nameA: 'Jag', nameB: 'Min man', shareA: 50, homeValue: 0, horizon: 10, scenario: 0, real: false, inflation: 2, contribGrowth: 0, taxRate: 22, remind: true, gistAuto: false },
-    posts: DEFAULT_POSTS.map(p => ({ ...p })), entries: {}, deposits: {}, assump: {},
+    posts: DEFAULT_POSTS.map(p => ({ ...p })), entries: {}, deposits: {}, assump: {}, sync: null,
     meta: { lastSnapMonth: '', gistId: '', gistLast: 0 } };
 }
 function normalizeDb(d) {
@@ -195,17 +196,18 @@ function normalizeDb(d) {
   b.entries = {}; if (d.entries && typeof d.entries === 'object') for (const mk in d.entries) if (/^\d{4}-\d{2}$/.test(mk)) { const o = {}; for (const id in d.entries[mk]) if (isFinite(d.entries[mk][id])) o[id] = +d.entries[mk][id]; if (Object.keys(o).length) b.entries[mk] = o; }
   b.deposits = {}; if (d.deposits && typeof d.deposits === 'object') for (const mk in d.deposits) if (/^\d{4}-\d{2}$/.test(mk)) { const o = {}; for (const id in d.deposits[mk]) if (isFinite(d.deposits[mk][id])) o[id] = +d.deposits[mk][id]; if (Object.keys(o).length) b.deposits[mk] = o; }
   b.assump = d.assump && typeof d.assump === 'object' ? d.assump : {};
+  b.sync = d.sync && typeof d.sync === 'object' && d.sync.repo ? { repo: String(d.sync.repo), path: String(d.sync.path || 'data.json'), base: d.sync.base || null, stamps: d.sync.stamps || {}, lastSync: +d.sync.lastSync || 0, lastError: d.sync.lastError || '' } : null;
   b.meta = Object.assign(b.meta, d.meta || {});
   b.appVersion = d.appVersion || APP_VERSION; b.model = DATA_MODEL; return b;
 }
 let db = emptyDb();
 function loadDb() { try { const r = localStorage.getItem(LS_KEY); if (r) db = normalizeDb(JSON.parse(r)); } catch (e) { console.warn(e); } }
 let warned = false;
-function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { if (!warned) { warned = true; toast('Kunde inte spara i webbläsaren. Exportera en säkerhetskopia nu.'); } } }
+function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(db)); if (db.sync && !syncing) scheduleSync(); } catch (e) { if (!warned) { warned = true; toast('Kunde inte spara i webbläsaren. Exportera en säkerhetskopia nu.'); } } }
 function exportObj() { return { app: 'ournetworth', appVersion: APP_VERSION, dataModel: DATA_MODEL, exportedAt: new Date().toISOString(), data: { settings: db.settings, posts: db.posts, entries: db.entries, deposits: db.deposits, assump: db.assump } }; }
 function applyImported(obj) {
   if (!obj || obj.app !== 'ournetworth' || !obj.data) throw new Error('Filen är inte en säkerhetskopia från den här appen.');
-  const keep = db.meta; db = normalizeDb({ ...obj.data, meta: keep }); db.appVersion = APP_VERSION; save();
+  const keep = db.meta, keepSync = db.sync; db = normalizeDb({ ...obj.data, meta: keep, sync: keepSync }); db.appVersion = APP_VERSION; save();
 }
 
 /* ---------- återställningspunkter ---------- */
@@ -335,7 +337,7 @@ function render(keep) {
   $('#nav .in').innerHTML = NAV.map(([k, l]) => `<button data-a="nav" data-v="${k}" ${S.view === k ? 'aria-current="page"' : ''}>${svgIcon(k)}${l}</button>`).join('');
   const v = S.view; let h = '';
   if (v === 'overview') h = viewOverview(); else if (v === 'entry') h = viewEntry(); else if (v === 'forecast') h = viewForecast();
-  else h = S.sub === 'posts' ? viewPosts() : S.sub === 'backup' ? viewBackup() : viewMore();
+  else h = S.sub === 'posts' ? viewPosts() : S.sub === 'backup' ? viewBackup() : S.sub === 'sync' ? viewSync() : viewMore();
   $('#main').innerHTML = h; window.scrollTo(0, keep ? y : 0);
 }
 function monthRow(mk, prevAct, nextAct, minOk, maxOk) {
@@ -478,6 +480,7 @@ function viewMore() {
   <div class="card pad"><div class="lbl2" style="margin-top:0">Skatt på lägenhetens värdeökning (%)</div><input class="inp num" inputmode="decimal" value="${st.taxRate}" data-change="taxRate" aria-label="Skatt på värdeökning i procent">
   <p class="note">Reavinstskatten på privatbostad är 22 % av vinsten, och appen drar av den från den estimerade värdeökningen i alla summor. Avdrag för förbättringar och mäklararvode räknas inte in, och uppskov är inte med. Skriv 0 om ni inte vill dra av skatt.</p></div>
   <div class="card"><button class="menu-btn" data-a="sub" data-v="posts">Poster och kolumner<span class="muted small" style="margin-left:auto">${db.posts.length}</span>${chev}</button>
+  <button class="menu-btn" data-a="sub" data-v="sync">Synk mellan enheter<span class="muted small" style="margin-left:auto">${esc(syncStatus())}</span>${chev}</button>
   <button class="menu-btn" data-a="sub" data-v="backup">Backup och versioner${chev}</button></div>
   <p class="note">Version ${APP_VERSION} · datamodell ${DATA_MODEL}. All data ligger bara i den här webbläsaren.</p>`;
 }
@@ -506,7 +509,7 @@ function viewBackup() {
   <p class="note" style="margin-top:4px">Inget skickas till någon server, utom när du själv väljer Gist nedan. Rensar du webbläsarens data försvinner allt, så exportera en kopia då och då.</p>
   <div class="line" style="margin-top:6px"><div><div class="t">${n} månader inmatade · ${db.posts.length} poster</div><div class="s">${ls ? 'Senaste återställningspunkt ' + new Date(ls.at).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : 'Inga återställningspunkter än'}</div></div></div>
   <div class="stack"><button class="btn primary" data-a="export">Exportera nu</button><button class="btn" data-a="restorefile">Återställ från fil</button></div></div>
-  <h3>Kopia till privat GitHub Gist</h3>
+  <h3>Extra backup till privat GitHub Gist</h3>
   <div class="card pad" style="margin-top:8px"><p class="note" style="margin:0 0 8px">Skapa en token på GitHub med behörigheten <b>gist</b>. Den sparas bara i den här webbläsaren. En hemlig Gist är dold i listor men kan öppnas av den som har länken.</p>
   <input class="inp" id="gist-token" type="password" autocomplete="off" placeholder="GitHub-token" value="${esc(token)}" aria-label="GitHub-token">
   <div class="check" style="margin-top:6px"><input type="checkbox" id="gist-auto" ${db.settings.gistAuto ? 'checked' : ''} data-change="gistauto"><label for="gist-auto">Automatisk kopia varje vecka</label></div>
@@ -517,6 +520,124 @@ function viewBackup() {
   <div class="card pad" style="margin-top:8px"><div class="line" style="padding-top:0"><div class="t">v${APP_VERSION}</div><div class="s">Datamodell ${DATA_MODEL}</div></div><p class="note" style="margin:0">Nytt i v${APP_VERSION}: ${esc(CHANGELOG[APP_VERSION] || '')}</p><div class="stack" style="margin-top:10px"><button class="btn" data-a="checkupdate">Sök efter uppdatering</button></div></div>
   <h3>Återställningspunkter</h3><p class="note" style="margin-top:4px">Skapas automatiskt före återställning och uppdatering samt vid månadsskifte. De tio senaste sparas i webbläsaren.</p>
   <div class="card" style="padding:2px 16px" id="snaps">${snapsHtml()}</div>`;
+}
+
+/* ---------- synk mot privat GitHub-repo ---------- */
+const SYNC_SETTINGS = ['nameA', 'nameB', 'shareA', 'homeValue', 'taxRate', 'inflation', 'contribGrowth'];
+let syncing = false, syncTimer = null;
+const b64enc = str => btoa(unescape(encodeURIComponent(str)));
+const b64dec = str => decodeURIComponent(escape(atob(str.replace(/\s/g, ''))));
+const sameVal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function flatten() {
+  const f = {};
+  for (const mk in db.entries) for (const id in db.entries[mk]) f[`e|${mk}|${id}`] = db.entries[mk][id];
+  for (const mk in db.deposits) for (const id in db.deposits[mk]) f[`d|${mk}|${id}`] = db.deposits[mk][id];
+  for (const id in db.assump) { const a = db.assump[id]; if (a.contrib !== undefined) f[`a|${id}|c`] = a.contrib; if (a.ret !== undefined) f[`a|${id}|r`] = a.ret; }
+  for (const k of SYNC_SETTINGS) f['s|' + k] = db.settings[k];
+  db.posts.forEach((p, i) => { f['p|' + p.id] = { owner: p.owner, kind: p.kind, name: p.name, ord: i }; });
+  return f;
+}
+function applyRecords(rec) {
+  const entries = {}, deposits = {}, assump = {}, posts = [];
+  for (const [k, r] of Object.entries(rec)) {
+    if (r.v === null || r.v === undefined) continue; const q = k.split('|');
+    if (q[0] === 'e') (entries[q[1]] = entries[q[1]] || {})[q[2]] = r.v;
+    else if (q[0] === 'd') (deposits[q[1]] = deposits[q[1]] || {})[q[2]] = r.v;
+    else if (q[0] === 'a') { const a = assump[q[1]] = assump[q[1]] || {}; a[q[2] === 'c' ? 'contrib' : 'ret'] = r.v; }
+    else if (q[0] === 's' && SYNC_SETTINGS.includes(q[1])) db.settings[q[1]] = r.v;
+    else if (q[0] === 'p' && r.v && KINDS[r.v.kind] && ['a', 'b', 's'].includes(r.v.owner)) posts.push({ id: q.slice(1).join('|'), owner: r.v.owner, kind: r.v.kind, name: String(r.v.name || 'Post'), ord: r.v.ord || 0 });
+  }
+  db.entries = entries; db.deposits = deposits; db.assump = assump;
+  if (posts.length) db.posts = posts.sort((x, y) => x.ord - y.ord).map(({ ord, ...p }) => p);
+}
+function localRecords() {
+  const f = flatten(), sy = db.sync, base = sy.base, st = sy.stamps, now = Date.now(), rec = {};
+  for (const k in f) { if (base && !sameVal(base[k], f[k])) st[k] = now; rec[k] = { v: f[k], t: st[k] || 0 }; }
+  if (base) for (const k in base) if (!(k in f)) { st[k] = now; rec[k] = { v: null, t: now }; }
+  for (const k in st) if (!(k in rec)) rec[k] = { v: null, t: st[k] };
+  return rec;
+}
+/* Per nyckel vinner den senaste ändringen. Vid lika tid vinner filen. */
+function mergeRecords(local, remote) {
+  const out = {}; const keys = new Set([...Object.keys(local), ...Object.keys(remote || {})]); let pulled = 0, pushed = 0; const cutoff = Date.now() - 90 * 86400000;
+  for (const k of keys) {
+    const a = local[k], b = remote ? remote[k] : undefined; let w;
+    if (!a) w = b; else if (!b) w = a; else w = a.t > b.t ? a : b;
+    if (w.v === null && w.t < cutoff) continue;
+    out[k] = w; if (!a || !sameVal(a.v, w.v)) pulled++; if (!b || !sameVal(b.v, w.v) || b.t !== w.t) pushed++;
+  }
+  return { out, pulled, pushed };
+}
+async function ghErr(r) {
+  let m = ''; try { m = (await r.json()).message || ''; } catch (e) { }
+  if (r.status === 401) return 'GitHub avvisade token (401). Kontrollera token och rättigheter.';
+  if (r.status === 403) return 'Åtkomst nekad (403). Kontrollera tokenens rättigheter eller försök igen om en stund.';
+  if (r.status === 404) return 'Hittar inte repot (404). Kontrollera namnet och att token har åtkomst till det.';
+  return `GitHub svarade ${r.status}${m ? ': ' + m : ''}`;
+}
+const ghHeaders = () => ({ Authorization: 'Bearer ' + localStorage.getItem(LS_SYNC_TOKEN), Accept: 'application/vnd.github+json' });
+function scheduleSync() { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(false), 4000); }
+async function syncNow(manual) {
+  const sy = db.sync; if (!sy || !localStorage.getItem(LS_SYNC_TOKEN)) { if (manual) toast('Synk är inte ansluten än.'); return false; }
+  if (syncing) return false; syncing = true; clearTimeout(syncTimer);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const url = `https://api.github.com/repos/${sy.repo}/contents/${sy.path.split('/').map(encodeURIComponent).join('/')}`;
+      const gr = await fetch(url, { headers: ghHeaders(), cache: 'no-store' }); let remote = null, sha = null;
+      if (gr.status === 200) {
+        const j = await gr.json(); sha = j.sha; let text;
+        if (j.content && j.encoding === 'base64') text = b64dec(j.content);
+        else { const rr = await fetch(url, { headers: { ...ghHeaders(), Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' }); if (!rr.ok) throw new Error(await ghErr(rr)); text = await rr.text(); }
+        const doc = JSON.parse(text); if (!doc || doc.app !== 'ournetworth-sync' || typeof doc.records !== 'object') throw new Error('Filen i repot är inte en synkfil från den här appen.'); remote = doc.records;
+      } else if (gr.status !== 404) throw new Error(await ghErr(gr));
+      const local = localRecords(); const { out, pulled, pushed } = mergeRecords(local, remote);
+      applyRecords(out);
+      sy.base = JSON.parse(JSON.stringify(flatten())); sy.stamps = {}; for (const k in out) if (out[k].t) sy.stamps[k] = out[k].t;
+      if (!remote || pushed > 0) {
+        const doc = { app: 'ournetworth-sync', version: 1, updatedAt: new Date().toISOString(), records: out };
+        const body = { message: 'Synk ' + new Date().toISOString().slice(0, 16).replace('T', ' '), content: b64enc(JSON.stringify(doc)) }; if (sha) body.sha = sha;
+        const pr = await fetch(url, { method: 'PUT', headers: { ...ghHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (pr.status === 409 || pr.status === 422) { if (attempt < 2) { continue; } throw new Error('Någon annan hann skriva samtidigt. Försök igen.'); }
+        if (pr.status === 404) throw new Error('Kunde inte skriva till repot (404). Kontrollera att token har Contents: Read and write för repot och att repot innehåller minst en fil, till exempel en README.');
+        if (!pr.ok) throw new Error(await ghErr(pr));
+      }
+      sy.lastSync = Date.now(); sy.lastError = ''; save(); syncing = false;
+      if (pulled && S.view !== 'entry') render(true);
+      if (manual) toast(`Synkat. ${pulled} ändringar hämtade, ${pushed} skickade.`); else if (pulled) toast(`${pulled} ändringar hämtade från den andra enheten`);
+      return true;
+    }
+  } catch (e) {
+    const msg = e && e.name === 'TypeError' ? 'Ingen anslutning. Försöker igen senare.' : (e.message || 'Synken misslyckades.');
+    sy.lastError = msg; save(); syncing = false; if (manual) toast(msg); if (S.view === 'more' && S.sub === 'sync') render(true); return false;
+  } finally { syncing = false; }
+}
+async function syncConnect() {
+  const repo = $('#sy-repo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, ''); const path = ($('#sy-path').value.trim() || 'data.json').replace(/^\/+/, ''); const tok = $('#sy-token').value.trim();
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { toast('Skriv repot som ägare/namn, till exempel anna/our-net-worth-data.'); return; }
+  if (!tok) { toast('Klistra in en token först.'); return; }
+  try {
+    const r = await fetch('https://api.github.com/repos/' + repo, { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+    if (!r.ok) { toast(await ghErr(r)); return; }
+    const j = await r.json();
+    if (!j.private) { toast('Repot är publikt. Synkfilen innehåller era saldon, så använd ett privat repo.'); return; }
+    if (j.permissions && !j.permissions.push) { toast('Token saknar skrivrättighet (Contents: Read and write).'); return; }
+  } catch (e) { toast('Ingen anslutning till GitHub.'); return; }
+  localStorage.setItem(LS_SYNC_TOKEN, tok); await snapshot('Före första synk');
+  db.sync = { repo, path, base: null, stamps: {}, lastSync: 0, lastError: '' }; save(); render(true); await syncNow(true); render(true);
+}
+function syncStatus() { const sy = db.sync; if (!sy) return 'Inte ansluten'; return sy.lastError ? 'Fel vid senaste synk' : sy.lastSync ? 'Synkad ' + new Date(sy.lastSync).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : 'Ansluten'; }
+function viewSync() {
+  const sy = db.sync;
+  if (!sy) return backHead('Synk mellan enheter') + `<p class="note" style="margin-top:6px">Datan sparas som en JSON-fil i ett <b>privat</b> GitHub-repo. Båda kan mata in från varsin enhet: ändringar slås ihop per månad och post, och den senaste ändringen vinner.</p>
+  <div class="card pad"><label class="lbl2" style="margin-top:0" for="sy-repo">Privat repo (ägare/namn)</label><input class="inp" id="sy-repo" placeholder="anna/our-net-worth-data" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <label class="lbl2" for="sy-path">Filnamn i repot</label><input class="inp" id="sy-path" value="data.json" autocomplete="off" autocapitalize="off">
+  <label class="lbl2" for="sy-token">Token</label><input class="inp" id="sy-token" type="password" placeholder="github_pat_…" autocomplete="off">
+  <div style="margin-top:14px"><button class="btn primary" data-a="syncconnect">Anslut och synka</button></div></div>
+  <h3>Så skapar du token</h3><ol class="note" style="padding-left:18px;margin-top:6px"><li>GitHub: Settings, Developer settings, Personal access tokens, Fine-grained tokens, Generate new token.</li><li>Repository access: Only select repositories, välj bara datarepot.</li><li>Permissions: Repository permissions, Contents: Read and write.</li><li>Klistra in samma token på båda enheterna. Den ger bara åtkomst till det repot och sparas bara i enhetens webbläsare.</li></ol>
+  <p class="note">Repot måste vara privat och innehålla minst en fil (kryssa i Add a README när du skapar det). Appen vägrar ansluta till ett publikt repo. Första gången slås enheten ihop med filen, och filen vinner om samma månad och post finns på båda sidor. En återställningspunkt skapas först.</p>`;
+  return backHead('Synk mellan enheter') + `<div class="card pad"><div class="line" style="padding-top:0"><div><div class="t">${esc(sy.repo)}</div><div class="s">${esc(sy.path)}</div></div></div>
+  <div class="line"><div><div class="t">${esc(syncStatus())}</div>${sy.lastError ? `<div class="s neg">${esc(sy.lastError)}</div>` : '<div class="s">Synkar när appen öppnas och några sekunder efter varje ändring.</div>'}</div></div>
+  <div class="stack" style="margin-top:8px"><button class="btn primary" data-a="syncnow">Synka nu</button><button class="btn danger" data-a="syncoff">Koppla från</button></div></div>`;
 }
 
 /* ---------- Sheets + toast ---------- */
@@ -607,6 +728,9 @@ const ACT = {
     await refreshSnaps(); render(true); toast('Återställt');
   },
   checkupdate() { if (!navigator.serviceWorker) { toast('Uppdateringar hanteras av webbläsaren.'); return; } navigator.serviceWorker.getRegistration().then(r => r ? r.update().then(() => toast('Du har den senaste versionen, eller så laddas en ny i bakgrunden.')) : toast('Ingen uppdatering hittades.')); },
+  syncconnect() { syncConnect(); },
+  syncnow() { syncNow(true).then(() => render(true)); },
+  syncoff() { if (!confirm('Koppla från synken? Datan på den här enheten ligger kvar, och filen i repot rörs inte.')) return; db.sync = null; localStorage.removeItem(LS_SYNC_TOKEN); save(); render(true); },
   reload() { location.reload(); }
 };
 document.addEventListener('click', e => { const el = e.target.closest('[data-a]'); if (!el) return; const fn = ACT[el.dataset.a]; if (fn) fn(el, e); });
@@ -649,6 +773,8 @@ async function boot() {
   }
   db.appVersion = APP_VERSION; save(); render();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
+  if (db.sync) syncNow(false);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && db.sync && Date.now() - (db.sync.lastSync || 0) > 60000) syncNow(false); });
   if (db.settings.gistAuto && last && localStorage.getItem(LS_TOKEN) && Date.now() - (db.meta.gistLast || 0) > 7 * 86400000) gistSave(true);
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     const had = !!navigator.serviceWorker.controller; navigator.serviceWorker.register('./sw.js').catch(() => { });
